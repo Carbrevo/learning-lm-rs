@@ -183,7 +183,7 @@ fn mlp(
     OP::silu(&mut intermediate, gate);
     //output = itermediate @ down_weight.T
     let mut output = Tensor::<f32>::default(residual.shape());
-    OP::matmul_transb(&mut output, 1.0, &intermediate, w_down, 1.0);
+    OP::matmul_transb(&mut output, 0.0, &intermediate, w_down, 1.0);
     //residual = output + residual
     OP::add(residual, &output);
 }
@@ -243,7 +243,6 @@ pub fn test_load_safetensors() {
 
     assert!(float_eq(&model.params.embedding_table.data()[50], &0.14453125, 1e-6));
     assert_eq!(model.params.lm_head.data()[10], model.params.embedding_table.data()[10]);
-    model.params.rms_att_w[0].data().iter().enumerate().for_each(|(i,x)|println!("[{}] {}", i, x));
     assert!(float_eq(&model.params.rms_att_w[0].data()[10], &0.18652344, 1e-6));
     assert!(float_eq(&model.params.rms_ffn_w[1].data()[10], &0.32421875, 1e-6));
     assert!(float_eq(&model.params.rms_out_w.data()[100], &0.73046875, 1e-6));
