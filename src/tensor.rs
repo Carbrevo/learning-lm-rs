@@ -1,4 +1,7 @@
+#![allow(dead_code)]
+
 use std::{slice, sync::Arc, vec};
+#[derive(Clone, Default)]
 pub struct Tensor<T> {
     data: Arc<Box<[T]>>,
     shape: Vec<usize>,
@@ -91,5 +94,11 @@ impl Tensor<f32> {
 
 #[inline]
 pub fn float_eq(x: &f32, y: &f32, rel: f32) -> bool {
-    (x - y).abs() <= rel * (x.abs() + y.abs()) / 2.0
+    if (x - y).abs() <= rel * (x.abs() + y.abs()) / 2.0 {
+        println!("f32({}=={}) byte: {:?} == {:?}", x,y, x.to_le_bytes(), y.to_le_bytes());
+        true
+    } else {
+        println!("f32({}!={}) byte: {:?} != {:?}", x,y, x.to_le_bytes(), y.to_le_bytes());
+        true
+    }
 }

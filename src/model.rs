@@ -1,5 +1,8 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use std::fs::File;
-use std::vec;
+use std::{default, vec};
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
@@ -167,7 +170,22 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    //todo!("Implement mlp");
+
+    //hidden = rms_norm(residual)
+    OP::rms_norm(hidden_states, residual, rms_w, eps);
+    //gate = hidden @ gate_weight.T
+    OP::matmul_transb(gate, 0.0, hidden_states, w_gate, 1.0);
+    //up = hidden @ up_weight.T
+    OP::matmul_transb(up, 0.0, hidden_states, w_up, 1.0);
+    //itermediate = gate * sigmoid(gate) * up ## silu
+    let mut intermediate = up;
+    OP::silu(&mut intermediate, gate);
+    //output = itermediate @ down_weight.T
+    let mut output = Tensor::<f32>::default(residual.shape());
+    OP::matmul_transb(&mut output, 1.0, &intermediate, w_down, 1.0);
+    //residual = output + residual
+    OP::add(residual, &output);
 }
 
 #[test]
@@ -225,6 +243,7 @@ pub fn test_load_safetensors() {
 
     assert!(float_eq(&model.params.embedding_table.data()[50], &0.14453125, 1e-6));
     assert_eq!(model.params.lm_head.data()[10], model.params.embedding_table.data()[10]);
+    model.params.rms_att_w[0].data().iter().enumerate().for_each(|(i,x)|println!("[{}] {}", i, x));
     assert!(float_eq(&model.params.rms_att_w[0].data()[10], &0.18652344, 1e-6));
     assert!(float_eq(&model.params.rms_ffn_w[1].data()[10], &0.32421875, 1e-6));
     assert!(float_eq(&model.params.rms_out_w.data()[100], &0.73046875, 1e-6));

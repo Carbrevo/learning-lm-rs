@@ -1,4 +1,8 @@
+#![allow(non_snake_case)]
+#![allow(dead_code)]
+
 use crate::tensor::Tensor;
+
 
 // get (row) vectors from a 2D table given a list of indices
 pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
@@ -71,7 +75,19 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    //todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+
+    assert!([y.shape().len(), x.shape().len()] == [2;2]);
+    assert!(y.shape() == x.shape());
+    assert!(w.shape().len() == 1);
+    assert!(w.shape()[0] == x.shape()[1]);
+
+    let M = x.shape()[0];
+    let N = x.shape()[1];
+    let mean = |i|{((0..N).map(|j|(x.data()[i*N + j] as f32).powi(2)).sum::<f32>()/(N as f32)+epsilon).sqrt()};
+    let rv_iter = (0..M).map(|i|{let mean = mean(i); (0..N).map(move |j|w.data()[j]/mean*x.data()[i*N + j])});
+    let data = rv_iter.flatten().collect::<Vec<f32>>();
+    *y = Tensor::<f32>::new(data, y.shape());
 }
 
 // y = sigmoid(x) * x * y
@@ -83,13 +99,39 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     // let _y = unsafe { y.data_mut() };
     // let _x = x.data();
 
-    todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    //todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    assert!(y.shape() == x.shape());
+    //let silu = 
+    unsafe {
+        y.data_mut().iter_mut()
+                    .zip(x.data())
+                    .for_each(|(ye, xe)|*ye=*xe**ye/(1.0+(-*xe).exp()));
+    }
 }
 
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    //todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    assert!([a.shape().len(), b.shape().len(), c.shape().len()] == [2;3]);
+    assert!(a.shape()[1] == b.shape()[1]);
+    assert!(c.shape() == &vec![ a.shape()[0], b.shape()[0] ]);
+    
+    let K = a.shape()[1];
+    let M = c.shape()[0];
+    let N = c.shape()[1];
+    let a_mi = |m, i|a.data()[m*K + i];
+    let b_in = |i, n|b.data()[n*K + i];
+    let ab_data = (0..M*N).map(|x|(0..K)
+                                                .map(|i|a_mi(x/N, i) * b_in(i, x%N))
+                                                .sum())
+                                        .collect();
+    let ab = Tensor::<f32>::new(ab_data, c.shape());
+    unsafe {
+        c.data_mut().iter_mut()
+                    .zip(ab.data())
+                    .for_each(|(ce, abe)|*ce = beta**ce + alpha**abe);
+    }
 }
 
 // Dot product of two tensors (treated as vectors)
@@ -105,6 +147,17 @@ pub fn dot(x: &Tensor<f32>, y: &Tensor<f32>) -> f32 {
     }
     sum
 }
+
+pub fn add(x: &mut Tensor<f32>, y: &Tensor<f32>) {
+    assert!(x.shape() == y.shape());
+
+    unsafe {
+        x.data_mut().iter_mut()
+                    .zip(y.data())
+                    .for_each(|(xe, ye)|*xe = *xe + *ye);
+    }
+}
+
 
 // Sample a index from a tensor (treated as a probability vector)
 pub fn random_sample(x: &Tensor<f32>, top_p: f32, top_k: u32, temperature: f32) -> u32 {
