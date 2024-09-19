@@ -1,21 +1,20 @@
 #![allow(unused)]
-use std::fmt::{ Formatter, Debug, Error };
-use std::cmp::*;
 use crate::tensor::*;
+use std::cmp::*;
+use std::fmt::{Debug, Error, Formatter};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Weight<T: PartialOrd + PartialEq> {
     pub val: T,
     pub tok: u32,
 }
-impl<T: PartialOrd + PartialEq > PartialEq for Weight<T> {
-
+impl<T: PartialOrd + PartialEq> PartialEq for Weight<T> {
     fn eq(&self, other: &Self) -> bool {
         self.val.eq(&other.val)
     }
 }
 
-impl<T: PartialOrd + PartialEq > PartialOrd for Weight<T> {
+impl<T: PartialOrd + PartialEq> PartialOrd for Weight<T> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.val.partial_cmp(&other.val).unwrap().reverse())
@@ -31,24 +30,23 @@ impl<T: PartialEq + PartialOrd + Copy + Debug> From<(usize, &T)> for Weight<T> {
         }
     }
 }
-    
-pub struct Logits<T: PartialEq + PartialOrd> ( pub(crate) Vec<Weight<T>> );
+
+pub struct Logits<T: PartialEq + PartialOrd>(pub(crate) Vec<Weight<T>>);
 
 impl<T: PartialEq + PartialOrd + Copy + Default + Debug> Logits<T> {
-
     pub fn new(x: &Tensor<T>) -> Self {
         assert!(x.shape()[x.shape().len() - 1] == x.size());
-        Self (
+        Self(
             x.data()
-            .iter()
-            .enumerate()
-            .map(Weight::<T>::from)
-            .collect::<Vec<_>>()
+                .iter()
+                .enumerate()
+                .map(Weight::<T>::from)
+                .collect::<Vec<_>>(),
         )
     }
 
     pub fn sort(&mut self) {
-        self.0.sort_unstable_by(|a, b|a.partial_cmp(b).unwrap());
+        self.0.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     }
 
     #[allow(unused)]

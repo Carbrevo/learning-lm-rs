@@ -11,25 +11,26 @@ use crate::operators as OP;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
-use tokenizers::Tokenizer;
+use std::fmt::Debug;
 use std::path::Path;
-use std::fmt:: { Debug };
-pub struct Llama<T> 
-where T: Debug 
+use tokenizers::Tokenizer;
+pub struct Llama<T>
+where
+    T: Debug,
 {
-    vocab: usize,           // vocab size
-    pub(crate) n_layers: usize,        // number of layers
-    n_q_h: usize,           // number of heads for q
-    pub(crate) n_kv_h: usize,          // number of heads for k and v
-    d: usize,               // dimension of hidden states
-    pub(crate) dqkv: usize,            // length of a single q, k, or v vector
-    di: usize,              // dimension of intermediate states
-    eps: f32,               // epsilon for RMS normalization
-    rope_theta: f32,        // rope theta for rope initialization
-    max_seq_len: usize,     // maximum sequence length
-    params: LLamaParams<T>, // trained weights of this model
-    bos_token_id: u32,      // start token id
-    pub(crate) eos_token_id: u32,      // end token id
+    vocab: usize,                 // vocab size
+    pub(crate) n_layers: usize,   // number of layers
+    n_q_h: usize,                 // number of heads for q
+    pub(crate) n_kv_h: usize,     // number of heads for k and v
+    d: usize,                     // dimension of hidden states
+    pub(crate) dqkv: usize,       // length of a single q, k, or v vector
+    di: usize,                    // dimension of intermediate states
+    eps: f32,                     // epsilon for RMS normalization
+    rope_theta: f32,              // rope theta for rope initialization
+    max_seq_len: usize,           // maximum sequence length
+    params: LLamaParams<T>,       // trained weights of this model
+    bos_token_id: u32,            // start token id
+    pub(crate) eos_token_id: u32, // end token id
 }
 
 impl Llama<f32> {
@@ -109,17 +110,39 @@ impl Llama<f32> {
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
             //todo!("self_attention(...)");
-            self_attention(&mut hidden_states, &mut att_scores, &q, &full_k, &full_v, &self.params.wo[layer],
-                            self.n_kv_h, n_groups, seq_len, total_seq_len, self.dqkv);
-                            eprintln!("L{}: after attention:\nhidden_states {}", layer, hidden_states);
+            self_attention(
+                &mut hidden_states,
+                &mut att_scores,
+                &q,
+                &full_k,
+                &full_v,
+                &self.params.wo[layer],
+                self.n_kv_h,
+                n_groups,
+                seq_len,
+                total_seq_len,
+                self.dqkv,
+            );
+            eprintln!(
+                "L{}: after attention:\nhidden_states {}",
+                layer, hidden_states
+            );
             //todo!("down_proj matmul and add residual");
-            //residual = x + residual    
+            //residual = x + residual
             OP::add(&mut residual, &mut hidden_states);
 
             //todo!("mlp(...)");
-            mlp(&mut residual, &mut hidden_states, &mut gate_buf, &mut up_buf, 
-                &self.params.w_up[layer], &self.params.w_down[layer], 
-                &self.params.w_gate[layer], &self.params.rms_ffn_w[layer], self.eps);
+            mlp(
+                &mut residual,
+                &mut hidden_states,
+                &mut gate_buf,
+                &mut up_buf,
+                &self.params.w_up[layer],
+                &self.params.w_down[layer],
+                &self.params.w_gate[layer],
+                &self.params.rms_ffn_w[layer],
+                self.eps,
+            );
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
@@ -143,7 +166,7 @@ impl Llama<f32> {
 
 fn self_attention(
     hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
-    attn: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+    attn: &mut Tensor<f32>,          // (n_kv_h, n_groups, seq, total_seq)
     q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
     k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
     v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
@@ -164,13 +187,24 @@ fn self_attention(
     //V = cat(V_cache, V)
 
     //### 以下是你需要实现的部分
-    assert!(hidden_states.shape() == &vec![ seq_len, n_kv_h * n_groups * dqkv]);
-    assert!(attn.shape() == &vec![ n_kv_h, n_groups, seq_len, total_seq_len]);
-    assert!(q.shape() == &vec![ seq_len, n_kv_h * n_groups, dqkv ],
-            "q {} \n [{}, {}, {}]", q, seq_len, n_kv_h * n_groups, dqkv );
-    assert!(k.shape() == &vec![ total_seq_len, n_kv_h * dqkv ], 
-            "k {} \n [ {}, {} ]", k, total_seq_len, n_kv_h * dqkv);
-    assert!(v.shape() == &vec![ total_seq_len, n_kv_h * dqkv ]);
+    assert!(hidden_states.shape() == &vec![seq_len, n_kv_h * n_groups * dqkv]);
+    assert!(attn.shape() == &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    assert!(
+        q.shape() == &vec![seq_len, n_kv_h * n_groups, dqkv],
+        "q {} \n [{}, {}, {}]",
+        q,
+        seq_len,
+        n_kv_h * n_groups,
+        dqkv
+    );
+    assert!(
+        k.shape() == &vec![total_seq_len, n_kv_h * dqkv],
+        "k {} \n [ {}, {} ]",
+        k,
+        total_seq_len,
+        n_kv_h * dqkv
+    );
+    assert!(v.shape() == &vec![total_seq_len, n_kv_h * dqkv]);
 
     //score = Q @ K.T / sqrt(dim)
     OP::scaled_dot_prod_qk(attn, q, k, n_kv_h, n_groups, seq_len, total_seq_len, dqkv);
@@ -178,7 +212,7 @@ fn self_attention(
     //attn = softmax(score)
     //TODO: Is it right?
     OP::masked_softmax(attn);
-    
+
     //hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
     //att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
     //q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
@@ -186,11 +220,19 @@ fn self_attention(
     //v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
     //x = attn @ V
     let mut attn_x = Tensor::default(hidden_states.shape());
-    OP::scaled_dot_prod_attn(&mut attn_x, attn, v, n_kv_h, n_groups, seq_len, total_seq_len, dqkv);
-
+    OP::scaled_dot_prod_attn(
+        &mut attn_x,
+        attn,
+        v,
+        n_kv_h,
+        n_groups,
+        seq_len,
+        total_seq_len,
+        dqkv,
+    );
 
     //x = x @ O_weight.T
-    OP::matmul_transb(hidden_states, 0.0, &attn_x, wo, 1.0);    
+    OP::matmul_transb(hidden_states, 0.0, &attn_x, wo, 1.0);
 }
 
 fn mlp(
@@ -262,8 +304,8 @@ pub fn test_mlp() {
 
 #[test]
 pub fn test_load_safetensors() {
-    use std::path::PathBuf;
     use crate::tensor::float_eq;
+    use std::path::PathBuf;
     let project_dir = env!("CARGO_MANIFEST_DIR");
     let model_dir = PathBuf::from(project_dir).join("models").join("story");
     let model = Llama::from_safetensors(model_dir);
@@ -275,17 +317,55 @@ pub fn test_load_safetensors() {
     assert_eq!(model.dqkv, 16);
     assert_eq!(model.di, 384);
 
-    assert!(float_eq(&model.params.embedding_table.data()[50], &0.14453125, 1e-6));
-    assert_eq!(model.params.lm_head.data()[10], model.params.embedding_table.data()[10]);
-    assert!(float_eq(&model.params.rms_att_w[0].data()[10], &0.18652344, 1e-6));
-    assert!(float_eq(&model.params.rms_ffn_w[1].data()[10], &0.32421875, 1e-6));
-    assert!(float_eq(&model.params.rms_out_w.data()[100], &0.73046875, 1e-6));
-    assert!(float_eq(&model.params.w_down[0].data()[100], &-0.0625, 1e-6));
+    assert!(float_eq(
+        &model.params.embedding_table.data()[50],
+        &0.14453125,
+        1e-6
+    ));
+    assert_eq!(
+        model.params.lm_head.data()[10],
+        model.params.embedding_table.data()[10]
+    );
+    assert!(float_eq(
+        &model.params.rms_att_w[0].data()[10],
+        &0.18652344,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.rms_ffn_w[1].data()[10],
+        &0.32421875,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.rms_out_w.data()[100],
+        &0.73046875,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.w_down[0].data()[100],
+        &-0.0625,
+        1e-6
+    ));
     assert!(float_eq(&model.params.w_up[0].data()[100], &1.46875, 1e-6));
-    assert!(float_eq(&model.params.w_gate[1].data()[100], &0.296875, 1e-6));
-    assert!(float_eq(&model.params.wq[1].data()[100], &0.032226563, 1e-6));
-    assert!(float_eq(&model.params.wk[1].data()[100], &-0.21386719, 1e-6));
-    assert!(float_eq(&model.params.wv[0].data()[100], &0.041015625, 1e-6));
+    assert!(float_eq(
+        &model.params.w_gate[1].data()[100],
+        &0.296875,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.wq[1].data()[100],
+        &0.032226563,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.wk[1].data()[100],
+        &-0.21386719,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.wv[0].data()[100],
+        &0.041015625,
+        1e-6
+    ));
     assert!(float_eq(&model.params.wo[0].data()[100], &0.01965332, 1e-6));
-
 }
