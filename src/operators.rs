@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use std::iter::zip;
 use crate::tensor::Tensor;
-
 
 // get (row) vectors from a 2D table given a list of indices
 pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
@@ -77,7 +77,8 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
     //todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
 
-    assert!([y.shape().len(), x.shape().len()] == [2;2]);
+    assert!([y.shape().len(), x.shape().len()] == [2;2],
+            "y={:?} x={:?}", y.shape(), x.shape());
     assert!(y.shape() == x.shape());
     assert!(w.shape().len() == 1);
     assert!(w.shape()[0] == x.shape()[1]);
@@ -113,7 +114,8 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
     //todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
-    assert!([a.shape().len(), b.shape().len(), c.shape().len()] == [2;3]);
+    assert!([a.shape().len(), b.shape().len(), c.shape().len()] == [2;3],
+            "a{:?} b{:?} c{:?}", a.shape(), b.shape(), c.shape());
     assert!(a.shape()[1] == b.shape()[1]);
     assert!(c.shape() == &vec![ a.shape()[0], b.shape()[0] ]);
     
@@ -134,6 +136,10 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
     }
 }
 
+pub fn inner_product(x: &[f32], y: &[f32]) -> f32 {
+    zip(x, y).fold(0.0, |acc, (a, b)| acc + a * b)
+}
+
 // Dot product of two tensors (treated as vectors)
 #[allow(unused)]
 pub fn dot(x: &Tensor<f32>, y: &Tensor<f32>) -> f32 {
@@ -149,7 +155,8 @@ pub fn dot(x: &Tensor<f32>, y: &Tensor<f32>) -> f32 {
 }
 
 pub fn add(x: &mut Tensor<f32>, y: &Tensor<f32>) {
-    assert!(x.shape() == y.shape());
+    assert!(x.shape() == y.shape(),
+            "x={:?}, y={:?}", x.shape(), y.shape());
 
     unsafe {
         x.data_mut().iter_mut()
@@ -158,6 +165,91 @@ pub fn add(x: &mut Tensor<f32>, y: &Tensor<f32>) {
     }
 }
 
+pub fn mul(x: &mut Tensor<f32>, scale: f32) {
+    unsafe {
+        x.data_mut().iter_mut()
+                    .for_each(|xe|*xe = *xe * scale);
+    }
+}
+
+pub fn scaled_dot_prod_qk(
+    att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+    q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+    k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    n_kv_h: usize,
+    n_groups: usize,
+    seq_len: usize,
+    total_seq_len: usize,
+    dqkv: usize,
+) {
+    //score = Q @ K.T / sqrt(dim)
+    eprintln!("attention scores {}", att_scores);    
+    eprintln!("attention q {}", q);    
+    eprintln!("attention k {}", k);
+    for h in 0..n_kv_h {
+        for g in 0..n_groups {
+            for t in 0..seq_len {
+                let q_off = t * n_kv_h * n_groups * dqkv
+                                    + h * n_groups * dqkv
+                                    + g * dqkv;
+                for r in 0..total_seq_len {
+                    let k_off = r * n_kv_h * dqkv
+                                        + h * dqkv;
+                    let att_off = h * n_groups * seq_len * total_seq_len
+                                        + g * seq_len * total_seq_len
+                                        + t * total_seq_len
+                                        + r;
+
+                    //OP::matmul_transb(att_scores, 0.0, q, k, 1.0/(q.shape().len() as f32).sqrt());
+                    unsafe {
+                        att_scores.data_mut()[att_off] = q.data()[q_off..q_off+dqkv].iter().zip(k.data()[k_off..k_off+dqkv].iter())
+                                                        //.inspect(|(x, y)|println!("[{}]@[{},{},{},{}] {} * {}", att_off, h, g, t, r, x, y))
+                                                        .fold(0.0f32, |acc, (x, y)| acc + x*y)/(dqkv as f32).sqrt();    
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn scaled_dot_prod_attn(
+    attn: &mut Tensor<f32>,          // (seq, n_kv_h * n_groups * dqkv)
+    scores: &Tensor<f32>,            // (n_kv_h, n_groups, seq, total_seq)
+    v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    n_kv_h: usize,
+    n_groups: usize,
+    seq_len: usize,
+    total_seq_len: usize,
+    dqkv: usize,
+) {
+    //x = attn @ V
+    eprintln!("attention V, scores {}", scores);
+    eprintln!("attention V, V {}", v);
+    for t in 0..seq_len {
+        for h in 0..n_kv_h {
+            for g in 0..n_groups {
+                let score_off = h * n_groups * seq_len * total_seq_len
+                                        + g * seq_len * total_seq_len
+                                        + t * total_seq_len;
+                for d in 0..dqkv {
+                    let v_step = n_kv_h * dqkv;
+                    let attn_off = t * n_kv_h * n_groups * dqkv
+                                        + h * n_groups * dqkv
+                                        + g * dqkv
+                                        + d;
+
+                    //OP::matmul_transb(&mut x, 0.0, &attn, v, 1.0);
+                    unsafe {
+                        attn.data_mut()[attn_off] = 
+                                scores.data()[score_off..score_off+total_seq_len].iter()
+                                .zip(v.data()[h*dqkv + d..].iter().step_by(v_step))
+                                .fold(0.0f32, |acc, (x, y)| acc + x*y);    
+                    }
+                }
+            }
+        }
+    }
+}
 
 // Sample a index from a tensor (treated as a probability vector)
 pub fn random_sample(x: &Tensor<f32>, top_p: f32, top_k: u32, temperature: f32) -> u32 {
@@ -261,4 +353,203 @@ fn test_matmul_transb() {
         &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
         1e-3
     ));
+}
+
+/*
+att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+n_kv_h: usize,
+n_groups: usize,
+seq_len: usize,
+total_seq_len: usize,
+dqkv: usize,
+*/
+#[test]
+fn test_scaled_dot_prod_qk_1() {
+    let n_kv_h = 1usize;
+    let n_groups = 1usize;
+    let seq_len = 1usize;
+    let total_seq_len = 1usize;
+    let dpkv = 1;
+    let mut att_scores = Tensor::<f32>::new(vec![1.1], 
+                                                    &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    let q = Tensor::<f32>::new(vec![2.2], 
+                                        &vec![seq_len, n_kv_h * n_groups * dpkv]);
+    let k = Tensor::<f32>::new(vec![3.3], 
+                                        &vec![total_seq_len, n_kv_h * dpkv]);
+    scaled_dot_prod_qk(&mut att_scores, &q, &k, n_kv_h, n_groups, seq_len, total_seq_len, dpkv);
+    assert!(att_scores.close_to(
+        &Tensor::<f32>::new(vec![2.2 * 3.3], &vec![n_kv_h, n_groups, seq_len, total_seq_len]),
+        1e-3
+    ));
+}
+
+/*
+att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+n_kv_h: usize,
+n_groups: usize,
+seq_len: usize,
+total_seq_len: usize,
+dqkv: usize,
+*/
+#[test]
+fn test_scaled_dot_prod_qk_2() {
+    let n_kv_h = 1usize;
+    let n_groups = 1usize;
+    let seq_len = 1usize;
+    let total_seq_len = 2usize;
+    let dpkv = 1;
+    let mut att_scores = Tensor::<f32>::new(vec![0.0; 2], 
+                                                    &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    let q = Tensor::<f32>::new(vec![3.3], 
+                                        &vec![seq_len, n_kv_h * n_groups * dpkv]);
+    let k = Tensor::<f32>::new(vec![4.4, 5.5], 
+                                        &vec![total_seq_len, n_kv_h * dpkv]);
+    scaled_dot_prod_qk(&mut att_scores, &q, &k, n_kv_h, n_groups, seq_len, total_seq_len, dpkv);
+    let target = Tensor::<f32>::new(vec![3.3* 4.4, 3.3 * 5.5], 
+                                        &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    assert!(att_scores.close_to(&target, 1e-3),
+        "result={:?}\ntarget={:?}", att_scores.data(), target.data());
+}
+
+/*
+att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+n_kv_h: usize,
+n_groups: usize,
+seq_len: usize,
+total_seq_len: usize,
+dqkv: usize,
+*/
+#[test]
+fn test_scaled_dot_prod_qk_23() {
+    let n_kv_h = 1usize;
+    let n_groups = 1usize;
+    let seq_len = 2usize;
+    let total_seq_len = 3usize;
+    let dpkv = 1;
+    let mut att_scores = Tensor::<f32>::new(vec![0.0;6], 
+                                                    &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    let q = Tensor::<f32>::new(vec![2.2, 3.3], 
+                                        &vec![seq_len, n_kv_h * n_groups * dpkv]);
+    let k = Tensor::<f32>::new(vec![4.4, 5.5, 6.6], 
+                                        &vec![total_seq_len, n_kv_h * dpkv]);
+    scaled_dot_prod_qk(&mut att_scores, &q, &k, n_kv_h, n_groups, seq_len, total_seq_len, dpkv);
+    assert!(att_scores.close_to(
+        &Tensor::<f32>::new(vec![2.2 * 4.4, 2.2 * 5.5, 2.2 * 6.6, 3.3 * 4.4, 3.3 * 5.5, 3.3 * 6.6], &vec![n_kv_h, n_groups, seq_len, total_seq_len]),
+        1e-3
+    ));
+}
+
+/*
+att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+*/
+#[test]
+fn test_scaled_dot_prod_qk_2223_2() {
+    let n_kv_h = 2usize;
+    let n_groups = 2usize;
+    let seq_len = 2usize;
+    let total_seq_len = 3usize;
+    let dqkv = 2;
+    let mut att_scores = Tensor::<f32>::new(vec![0.0;24], 
+                                                    &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    let q = Tensor::<f32>::new(
+        vec![11.11, 11.12, 11.21, 11.22, 12.11, 12.12, 12.21, 12.22,
+                    21.11, 21.12, 21.21, 21.22, 22.11, 22.12, 22.21, 22.22,], 
+        &vec![seq_len, n_kv_h * n_groups * dqkv]);
+    let k = Tensor::<f32>::new(
+        vec![1.11, 1.12, 1.21, 1.22,
+                    2.11, 2.12, 2.21, 2.22,
+                    3.11, 3.12, 3.21, 3.22], 
+        &vec![total_seq_len, n_kv_h * dqkv]);
+    scaled_dot_prod_qk(&mut att_scores, &q, &k, n_kv_h, n_groups, seq_len, total_seq_len, dqkv);
+    let mut target = Tensor::<f32>::new(
+        vec![
+        11.11 * 1.11 + 11.12 * 1.12, 11.11 * 2.11 + 11.12 * 2.12, 11.11 * 3.11 + 11.12 * 3.12,
+        21.11 * 1.11 + 21.12 * 1.12, 21.11 * 2.11 + 21.12 * 2.12, 21.11 * 3.11 + 21.12 * 3.12,
+        11.21 * 1.11 + 11.22 * 1.12, 11.21 * 2.11 + 11.22 * 2.12, 11.21 * 3.11 + 11.22 * 3.12,
+        21.21 * 1.11 + 21.22 * 1.12, 21.21 * 2.11 + 21.22 * 2.12, 21.21 * 3.11 + 21.22 * 3.12,
+
+        12.11 * 1.21 + 12.12 * 1.22, 12.11 * 2.21 + 12.12 * 2.22, 12.11 * 3.21 + 12.12 * 3.22,
+        22.11 * 1.21 + 22.12 * 1.22, 22.11 * 2.21 + 22.12 * 2.22, 22.11 * 3.21 + 22.12 * 3.22,
+        12.21 * 1.21 + 12.22 * 1.22, 12.21 * 2.21 + 12.22 * 2.22, 12.21 * 3.21 + 12.22 * 3.22,
+        22.21 * 1.21 + 22.22 * 1.22, 22.21 * 2.21 + 22.22 * 2.22, 22.21 * 3.21 + 22.22 * 3.22,
+        ], 
+        &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    mul(&mut target, 1.0/(dqkv as f32).sqrt());
+    assert!(att_scores.close_to(&target, 1e-3),
+            "result={:?}\ntarget={:?}", att_scores.data(), target.data()); 
+}
+
+#[test]
+fn test_close() {
+    let x = Tensor::<f32>::new(vec![1.0, 1.0e-1, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-7], 
+                                    &vec![8]);
+    assert!(x.close_to(
+        &Tensor::<f32>::new(vec![1.0, 1.0e-1, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-7], 
+            &vec![8]), 1e-3 ));
+
+    assert!(x.close_to(
+        &Tensor::<f32>::new(vec![1.0, 1.0e-1, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-7], 
+            &vec![8]), 1e-3 ));
+}
+/*
+attn: &mut Tensor<f32>,          // (seq, n_kv_h * n_groups * dqkv)
+scores: &Tensor<f32>,            // (n_kv_h, n_groups, seq, total_seq)
+v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+*/
+#[test]
+fn test_scaled_dot_prod_attn_2223_2() {
+    let n_kv_h = 2usize;
+    let n_groups = 2usize;
+    let seq_len = 2usize;
+    let total_seq_len = 3usize;
+    let dqkv = 2;
+    let mut attn = Tensor::<f32>::new(vec![0.0; 16], 
+                                            &vec![seq_len, n_kv_h * n_groups * dqkv]);
+    let scores = Tensor::<f32>::new(
+        vec![
+            11.11, 11.12, 11.13, 11.21, 11.22, 11.23,
+            12.11, 12.12, 12.13, 12.21, 12.22, 12.23,
+
+            21.11, 21.12, 21.13, 21.21, 21.22, 21.23,
+            22.11, 22.12, 22.13, 22.21, 22.22, 22.23,
+        ], 
+        &vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    let v = Tensor::<f32>::new(
+        vec![
+            1.11, 1.12, 1.21, 1.22,
+            2.11, 2.12, 2.21, 2.22,
+            3.11, 3.12, 3.21, 3.22,
+        ], 
+        &vec![total_seq_len, n_kv_h * dqkv]);
+    scaled_dot_prod_attn(&mut attn, &scores, &v, n_kv_h, n_groups, seq_len, total_seq_len, dqkv);
+    let target = Tensor::<f32>::new(
+        vec![
+        11.11 * 1.11 + 11.12 * 2.11 + 11.13 * 3.11, 11.11 * 1.12 + 11.12 * 2.12 + 11.13 * 3.12,
+        12.11 * 1.11 + 12.12 * 2.11 + 12.13 * 3.11, 12.11 * 1.12 + 12.12 * 2.12 + 12.13 * 3.12,
+        //--
+        21.11 * 1.21 + 21.12 * 2.21 + 21.13 * 3.21, 21.11 * 1.22 + 21.12 * 2.22 + 21.13 * 3.22,
+        22.11 * 1.21 + 22.12 * 2.21 + 22.13 * 3.21, 22.11 * 1.22 + 22.12 * 2.22 + 22.13 * 3.22,
+
+        11.21 * 1.11 + 11.22 * 2.11 + 11.23 * 3.11, 11.21 * 1.12 + 11.22 * 2.12 + 11.23 * 3.12,
+        12.21 * 1.11 + 12.22 * 2.11 + 12.23 * 3.11, 12.21 * 1.12 + 12.22 * 2.12 + 12.23 * 3.12,
+        //--
+        21.21 * 1.21 + 21.22 * 2.21 + 21.23 * 3.21, 21.21 * 1.22 + 21.22 * 2.22 + 21.23 * 3.22,
+        22.21 * 1.21 + 22.22 * 2.21 + 22.23 * 3.21, 22.21 * 1.22 + 22.22 * 2.22 + 22.23 * 3.22,
+
+        ], 
+        &vec![seq_len, n_kv_h * n_groups * dqkv]);
+    assert!(attn.close_to(&target, 1e-3),
+            "result={:?}\ntarget={:?}", attn.data(), target.data()); 
 }

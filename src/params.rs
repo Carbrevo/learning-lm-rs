@@ -45,7 +45,7 @@ macro_rules! norm_tensor {
             let name = "model.norm.weight";
             
             let tensorview = $safetensor.tensor(name)
-                                .inspect(|x|println!("{}.shape={:?}", name, x.shape()))
+                                //.inspect(|x|println!("{}.shape={:?}", name, x.shape()))
                                 .unwrap();
             let blen = View::data_len(&tensorview);
             let tensor_data = (0..blen/size_of::<$ttype>())
@@ -89,7 +89,9 @@ impl Convert<f32> for [u8] {
     }
 }
 
-pub struct LLamaParams<T> {
+pub struct LLamaParams<T> 
+where T: Debug 
+{
     // token_id to embedding lookup table
     pub embedding_table: Tensor<T>, // (vocab_size, dim)
     // decoder layer
@@ -114,10 +116,12 @@ where [u8]: Convert<T>
     pub fn from_safetensors(safetensor: &SafeTensors, config: &LlamaConfigJson) -> Self {
         //todo!("实现从safetensors文件的模型参数加载");
 
+        // /*
         for (name, view) in safetensor.tensors() {
-            println!("'{}' = {:?}, {:?}", name, view.dtype(), view.shape());
+            eprintln!("'{}' = {:?}, {:?}", name, view.dtype(), view.shape());
         }
-        println!("{:?}", config);
+        eprintln!("{:?}", config);
+        //*/
 
         LLamaParams::<T> {
              embedding_table: embedding_tensor!(safetensor, embedding_table, T, config),

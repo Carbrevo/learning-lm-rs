@@ -1,15 +1,36 @@
 #![allow(dead_code)]
+#![allow(unused)]
 
 use std::{slice, sync::Arc, vec};
+use std::fmt::{ Display, Formatter, Debug, Error };
+use std::ops::{ Index };
+
 #[derive(Clone, Default)]
-pub struct Tensor<T> {
+pub struct Tensor<T> 
+where T: Debug {
     data: Arc<Box<[T]>>,
     shape: Vec<usize>,
     offset: usize,
     length: usize,
 }
 
-impl<T: Copy + Clone + Default> Tensor<T> {
+impl<T : Debug > Display for Tensor<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+        if let Some(first) = self.data.first_chunk::<16>() {
+            write!(f, "Tensor: Shape={:?}, off={}, len={}\nData: {:?}", 
+                    self.shape, self.offset, self.length, first)
+        } else {
+            write!(f, "Tensor: Shape={:?}, off={}, len={}\nData: {:?}", 
+                    self.shape, self.offset, self.length, self.data)
+        }
+    }
+}
+
+//impl<T: Debug> Index<usize> for Tensor<T> {
+
+//}
+
+impl<T: Copy + Clone + Default + Debug> Tensor<T> {
     pub fn new(data: Vec<T>, shape: &Vec<usize>) -> Self {
         let length = data.len();
         Tensor {
@@ -64,8 +85,6 @@ impl<T: Copy + Clone + Default> Tensor<T> {
             length: new_length,
         }
     }
-
-
 }
 
 // Some helper functions for testing and debugging
@@ -95,10 +114,12 @@ impl Tensor<f32> {
 #[inline]
 pub fn float_eq(x: &f32, y: &f32, rel: f32) -> bool {
     if (x - y).abs() <= rel * (x.abs() + y.abs()) / 2.0 {
-        println!("f32({}=={}) byte: {:?} == {:?}", x,y, x.to_le_bytes(), y.to_le_bytes());
+        println!("f32({}=={}) rel={} byte: {:?} == {:?}", x,y, rel * (x.abs() + y.abs()) / 2.0,
+                                                        x.to_le_bytes(), y.to_le_bytes());
         true
     } else {
-        println!("f32({}!={}) byte: {:?} != {:?}", x,y, x.to_le_bytes(), y.to_le_bytes());
-        true
+        println!("f32({}!={}) rel={} byte: {:?} != {:?}", x,y, rel * (x.abs() + y.abs()) / 2.0,
+                                                x.to_le_bytes(), y.to_le_bytes());
+        false
     }
 }

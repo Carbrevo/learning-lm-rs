@@ -5,26 +5,31 @@ use std::fs::File;
 use std::{default, vec};
 
 use crate::config::LlamaConfigJson;
-use crate::kvcache::KVCache;
+use crate::ctxgen::{GenerateIterator, Generator};
+use crate::kvcache::{self, KVCache};
 use crate::operators as OP;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
+use tokenizers::Tokenizer;
 use std::path::Path;
-pub struct Llama<T> {
+use std::fmt:: { Debug };
+pub struct Llama<T> 
+where T: Debug 
+{
     vocab: usize,           // vocab size
-    n_layers: usize,        // number of layers
+    pub(crate) n_layers: usize,        // number of layers
     n_q_h: usize,           // number of heads for q
-    n_kv_h: usize,          // number of heads for k and v
+    pub(crate) n_kv_h: usize,          // number of heads for k and v
     d: usize,               // dimension of hidden states
-    dqkv: usize,            // length of a single q, k, or v vector
+    pub(crate) dqkv: usize,            // length of a single q, k, or v vector
     di: usize,              // dimension of intermediate states
     eps: f32,               // epsilon for RMS normalization
     rope_theta: f32,        // rope theta for rope initialization
     max_seq_len: usize,     // maximum sequence length
     params: LLamaParams<T>, // trained weights of this model
     bos_token_id: u32,      // start token id
-    eos_token_id: u32,      // end token id
+    pub(crate) eos_token_id: u32,      // end token id
 }
 
 impl Llama<f32> {
@@ -100,25 +105,32 @@ impl Llama<f32> {
                 past_seq_len,
                 self.rope_theta,
             );
-
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
-            todo!("self_attention(...)");
-            todo!("down_proj matmul and add residual");
+            //todo!("self_attention(...)");
+            self_attention(&mut hidden_states, &mut att_scores, &q, &full_k, &full_v, &self.params.wo[layer],
+                            self.n_kv_h, n_groups, seq_len, total_seq_len, self.dqkv);
+                            eprintln!("L{}: after attention:\nhidden_states {}", layer, hidden_states);
+            //todo!("down_proj matmul and add residual");
+            //residual = x + residual    
+            OP::add(&mut residual, &mut hidden_states);
 
-            todo!("mlp(...)");
+            //todo!("mlp(...)");
+            mlp(&mut residual, &mut hidden_states, &mut gate_buf, &mut up_buf, 
+                &self.params.w_up[layer], &self.params.w_down[layer], 
+                &self.params.w_gate[layer], &self.params.rms_ffn_w[layer], self.eps);
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
         // which contains the probabilities for the next token.
         let mut logits = Tensor::<f32>::default(&vec![1, self.vocab]);
         let mut hidden_states = hidden_states.slice((seq_len - 1) * self.d, &vec![1, self.d]);
-        let residual = residual.slice((seq_len - 1) * self.d, &vec![self.d]);
+        let mut residual = residual.slice((seq_len - 1) * self.d, &vec![self.d]);
 
         OP::rms_norm(
             &mut hidden_states,
-            &residual,
+            residual.reshape(&vec![1, residual.shape()[0]]),
             &self.params.rms_out_w,
             self.eps,
         );
@@ -127,36 +139,58 @@ impl Llama<f32> {
 
         logits
     }
-
-    pub fn generate(
-        &self,
-        token_ids: &[u32],
-        max_len: usize,
-        top_p: f32,
-        top_k: u32,
-        temperature: f32,
-    ) -> Vec<u32>{
-        let mut result = Vec::<u32>::new();
-        
-        todo!("实现文本生成");
-        
-        result
-    }
 }
 
 fn self_attention(
     hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
-    att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+    attn: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
     q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
     k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
     v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    wo: &Tensor<f32>,
     n_kv_h: usize,
     n_groups: usize,
     seq_len: usize,
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    todo!("Implement self_attention");
+    //todo!("Implement self_attention");
+
+    //x = rms_norm(residual)
+    //Q = RoPE(x @ Q_weight.T)
+    //K = RoPE(x @ K_weight.T)
+    //V = x @ V_weight.T
+    //K = cat(K_cache, K)
+    //V = cat(V_cache, V)
+
+    //### 以下是你需要实现的部分
+    assert!(hidden_states.shape() == &vec![ seq_len, n_kv_h * n_groups * dqkv]);
+    assert!(attn.shape() == &vec![ n_kv_h, n_groups, seq_len, total_seq_len]);
+    assert!(q.shape() == &vec![ seq_len, n_kv_h * n_groups, dqkv ],
+            "q {} \n [{}, {}, {}]", q, seq_len, n_kv_h * n_groups, dqkv );
+    assert!(k.shape() == &vec![ total_seq_len, n_kv_h * dqkv ], 
+            "k {} \n [ {}, {} ]", k, total_seq_len, n_kv_h * dqkv);
+    assert!(v.shape() == &vec![ total_seq_len, n_kv_h * dqkv ]);
+
+    //score = Q @ K.T / sqrt(dim)
+    OP::scaled_dot_prod_qk(attn, q, k, n_kv_h, n_groups, seq_len, total_seq_len, dqkv);
+
+    //attn = softmax(score)
+    //TODO: Is it right?
+    OP::masked_softmax(attn);
+    
+    //hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
+    //att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+    //q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+    //k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    //v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    //x = attn @ V
+    let mut attn_x = Tensor::default(hidden_states.shape());
+    OP::scaled_dot_prod_attn(&mut attn_x, attn, v, n_kv_h, n_groups, seq_len, total_seq_len, dqkv);
+
+
+    //x = x @ O_weight.T
+    OP::matmul_transb(hidden_states, 0.0, &attn_x, wo, 1.0);    
 }
 
 fn mlp(
